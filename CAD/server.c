@@ -20,25 +20,28 @@
                      reason.
 */
  
-#include<stdio.h>
-#include<string.h>          //strlen
-#include<stdlib.h>          //strlen
-#include<pwd.h>
-#include<limits.h>
-#include<sys/stat.h>
-#include<fcntl.h>
-#include<locale.h>
-#include<sys/socket.h>
-#include<arpa/inet.h>       //inet_addr
-#include<unistd.h>          //write
-#include<pthread.h>         //for threading , link with lpthread
-#include<sqlite3.h>         //for local database handling
-#include<time.h>            //used for timestamping
-#include<signal.h>          //used to catch Ctrl-C and other things
-#include<err.h>             //used to handle errors?
-#include<errno.h>
-#include<ncurses.h>         //so that the server has an interface
-#include<curses.h>
+#include <stdio.h>
+#include <string.h>          //strlen
+#include <stdlib.h>          //strlen
+#include <pwd.h>
+#include <limits.h>
+#include <fcntl.h>
+#include <locale.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/select.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>       //inet_addr
+#include <unistd.h>          //write
+#include <pthread.h>
+#include <sqlite3.h>         //for local database handling
+#include <time.h>            //used for timestamping
+#include <signal.h>          //used to catch Ctrl-C and other things
+#include <err.h>             //used to handle errors?
+#include <errno.h>
+#include <ncurses.h>         //so that the server has an interface
 
 // definitions
 
@@ -68,10 +71,13 @@ char *errorlevel[3] = {
 
 // program commands
 #define EXITPROG ".quit"
-#define MEMUSAGE ".ver"
-#define UPTIME ".uptime" 
+#define OPTVER   ".ver"
+#define UPTIME   ".uptime" 
+#define OPTRES   ".res"
+#define BCAST    ".bcast"
 
-
+#define PORT 8888
+#define MAXMSG 512
 
 // other stuff
 
@@ -154,6 +160,56 @@ int construct_record ( char *fn, char *ln, char *dob, char gender, int race );
 struct NCIC *db_ncic ( char *fn, char *ln, char *dob );
 
 // functions here
+
+int make_socket (uint16_t port){
+    int sock;
+    struct sockaddr_in name;
+    
+    /* create the socket */
+    sock = socket (PF_INET, SOCK_STREAM, 0);
+    if(sock < 0)
+    {
+        logger(2, "Socket creation failed. Miserably.");
+        exit (EXIT_FAILURE);
+    }
+    
+    /* give the socket a name */
+    name.sin_family = AF_INET;
+    name.sin_port = htons (port);
+    name.sin_addr.s_addr = htonl (INADDR_ANY);
+    if (bind (sock, (struct sockaddr *) &name, sizeof(name)) < 0)
+    {
+        logger(2, "Bind error.  Dude, really?");
+        exit (EXIT_FAILURE);
+    }
+    
+    return sock;
+}
+
+static int read_from_client (int filedes) {
+    char buffer[MAXMSG];
+    int nbytes;
+    
+    nbytes= read (filedes, buffer, MAXMSG);
+    if (nbytes < 0)
+    {
+        /* read error */
+        char *errmesg = "";
+        sprintf(errmesg, "Read error from client(%d).", filedes);
+        logger(1, errmesg);
+    } 
+    else if (nbytes == 0)
+    {
+        /* end of file */
+        return -1;
+    }
+    else
+    {
+        /* data read */
+        // do nothing for now but eventually this will handle client input requests
+        return 0;
+    }
+}
 
 static void printline(const char *errlvl, const char *mesg){
     
@@ -328,82 +384,80 @@ void intHandler(int dummy)
  
 int main(int argc , char *argv[])
 {
+    
     if (setlocale(LC_ALL, "") == NULL)
         logger(2, "Failed to set locale");
     
-    int socket_desc , client_sock , c , *new_sock;
-    struct sockaddr_in server , client;
-     
-    //Create socket
-    socket_desc = socket(AF_INET , SOCK_STREAM , 0);
-    if (socket_desc == -1)
-    {
-        logger(1, "Could not create socket");
-    }
-    logger(0, "Socket created");
-     
-    //Prepare the sockaddr_in structure
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons( 8888 );
-     
-    //Bind
-    if( bind(socket_desc,(struct sockaddr *)&server , sizeof(server)) < 0)
-    {
-        //print the error message
-        logger(2, "Bind failed. Error");
-        return 1;
-    }
-    logger(0, "Bind done");
-     
-    //Listen
-    listen(socket_desc , 3);
-     
-    //Accept any incoming connection
-    logger(0,"Waiting for incoming connections...");
-    c = sizeof(struct sockaddr_in);
+    // extern int make_socket (uint16_t port);
+    int sock;
+    fd_set active_fd_set, read_fd_set;
+    int i;
+    struct sockaddr_in clientname;
+    socklen_t size;
     
     // start curses here
     createwins();
     readout();
-     
-    while( (client_sock = accept(socket_desc, (struct sockaddr *)&client, (socklen_t*)&c)) )
+    
+    /* create the socket and set it up to accept connections */
+    
+    sock = make_socket (PORT);
+    if (listen (sock, 1) < 0)
     {
-        logger(0, "Connection accepted");
-         
-        pthread_t sniffer_thread;
-        new_sock = malloc(1);
-        *new_sock = client_sock;
-         
-        if( pthread_create( &sniffer_thread , NULL ,  connection_handler , (void*) new_sock) < 0)
-        {
-            logger(2,"Could not create thread.");
-            return 1;
-        }
-         
-        //Now join the thread , so that we dont terminate before the thread
-        pthread_join( sniffer_thread , NULL);
-        logger(0, "Handler assigned");
-        
-        if(keepRunning == false)
-        {
-            // someone pressed ctrl-c, so now we shutdown everything and exit with an error
-            close(socket_desc);
-            return 1;
-        }
-        
-        readinput();
+        char *errmesg = "";
+        sprintf(errmesg, "Cannot listen on port %d", PORT);
+        logger(2,errmesg);
+        exit (EXIT_FAILURE);
     }
-     
-    if (client_sock < 0)
+    
+    /* init the set of active sockets */
+    FD_ZERO (&active_fd_set);
+    FD_SET  (sock, &active_fd_set);
+    
+    while(keepRunning)
     {
-        logger(1, "Accept failed.");
-        // close socket
-        // close (socket_desc);
-        destroywins();
-        return 1;
+        /* block until input arrives on one or more active sockets */
+        read_fd_set = active_fd_set;
+        if (select (FD_SETSIZE, &read_fd_set, NULL, NULL, NULL) < 0)
+        {
+            logger(1, "Socket Error");
+        }
+        
+        /* service all the sockets with input pending */
+        for (i = 0; i < FD_SETSIZE; ++i)
+            if (FD_ISSET (i, &read_fd_set))
+            {
+                if (i == sock)
+                {
+                    /* connection request on original socket */
+                    int new;
+                    size = sizeof (clientname);
+                    new = accept (sock, (struct sockaddr *) &clientname, &size);
+                    
+                    if (new < 0)
+                    {
+                        logger(2, "New connection NOT accepted.");
+                    }
+                    
+                    char *contxt = "";
+                    sprintf(contxt, "Connect from host %s, port %hd", inet_ntoa(clientname.sin_addr), ntohs(clientname.sin_port));
+                    logger(0, contxt);
+                    FD_SET (new, &active_fd_set);
+                    
+                }
+                else
+                {
+                    /* data arriving on already-connected socket */
+                    if (read_from_client(i)<0)
+                    {
+                        close(i);
+                        FD_CLR(i, &active_fd_set);
+                    }
+                }
+            }
     }
-     
+    
+    destroywins();
     return EXIT_SUCCESS;
 }
  
