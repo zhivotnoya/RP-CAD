@@ -35,8 +35,7 @@
 #include <netdb.h>
 #include <arpa/inet.h>       //inet_addr
 #include <unistd.h>          //write
-#include <pthread.h>
-#include <sqlite3.h>         //for local database handling
+// #include <sqlite3.h>         //for local database handling
 #include <time.h>            //used for timestamping
 #include <signal.h>          //used to catch Ctrl-C and other things
 #include <err.h>             //used to handle errors?
@@ -203,12 +202,10 @@ static int read_from_client (int filedes) {
         /* end of file */
         return -1;
     }
-    else
-    {
-        /* data read */
-        // do nothing for now but eventually this will handle client input requests
-        return 0;
-    }
+    
+    /* data read */
+    // do nothing for now but eventually this will handle client input requests
+    return 0;
 }
 
 static void printline(const char *errlvl, const char *mesg){
@@ -241,6 +238,7 @@ static void printline(const char *errlvl, const char *mesg){
     if (has_colors() == TRUE) wattron(wout, COLOR_PAIR(MSG));
     wprintw(wout, "] %s", mesg);
     if (has_colors() == TRUE) wattroff(wout, COLOR_PAIR(MSG));
+    wrefresh(wout);
 }
 
 static void readout(void) {
@@ -252,6 +250,7 @@ static void updatewout(void) {
     delwin(wout);
     wout = newwin(winrows - 2, wincols, 0, 0);
     scrollok(wout, true);
+    wborder(wout, ACS_VLINE, ACS_VLINE, ACS_HLINE, ACS_HLINE, ACS_ULCORNER, ACS_URCORNER, ACS_LLCORNER, ACS_LRCORNER);
     readout();
 }
 
@@ -295,6 +294,8 @@ static void sendmesg(const char* mesg) {
 static void readinput(void) {
     // read kybd input
     char *input = "";
+    if ((input = calloc(1, LINE_MAX)) == NULL)
+        err(EXIT_FAILURE, "failed to allocate space for input");
     
     int r = wgetnstr(winp, input, LINE_MAX);
     updatewinp();
@@ -310,6 +311,7 @@ static void createwins(void) {
     /* start ncurses mode - do not buffer input */
     initscr();
     cbreak();
+    nodelay(winp,TRUE);
     
     /* start color support and setup color pairs */
     if (has_colors() == TRUE) {
@@ -324,45 +326,6 @@ static void createwins(void) {
     redrawall();
 }
 
-// Connection handler for each connected client
-
-void *connection_handler(void *socket_desc)
-{
-    // FUTURE HANDLER -- Handles all client requests
-    //Get the socket descriptor
-    int sock = *(int*)socket_desc;
-    int read_size;
-    char *message , client_message[2000];
-     
-    //Send some messages to the client
-    message = "Greetings! I am your connection handler\n";
-    write(sock , message , strlen(message));
-     
-    message = "Now type something and i shall repeat what you type \n";
-    write(sock , message , strlen(message));
-     
-    //Receive a message from client
-    while( (read_size = recv(sock , client_message , 2000 , 0)) > 0 )
-    {
-        //Send the message back to client
-        write(sock , client_message , strlen(client_message));
-    }
-     
-    if(read_size == 0)
-    {
-        puts("Client disconnected");
-        fflush(stdout);
-    }
-    else if(read_size == -1)
-    {
-        perror("recv failed");
-    }
-         
-    //Free the socket pointer
-    free(socket_desc);
-     
-    return 0;
-}
 
 void logger(int lvl, char *action)
 {
@@ -414,6 +377,10 @@ int main(int argc , char *argv[])
     FD_ZERO (&active_fd_set);
     FD_SET  (sock, &active_fd_set);
     
+    // read input from winp before we enter that loop
+    
+    readinput();
+    
     while(keepRunning)
     {
         /* block until input arrives on one or more active sockets */
@@ -422,7 +389,7 @@ int main(int argc , char *argv[])
         {
             logger(1, "Socket Error");
         }
-        
+        logger(0, "Socket open, listening for connections.");
         /* service all the sockets with input pending */
         for (i = 0; i < FD_SETSIZE; ++i)
             if (FD_ISSET (i, &read_fd_set))
