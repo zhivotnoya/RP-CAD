@@ -1,5 +1,23 @@
 /*
-    C socket server example, handles multiple clients using threads
+    CAD SERVER
+    
+    Created by: Thomas Kroll aka zhivotnoya.
+    
+    If you use this code, please credit me as I've done quite a bit of work on it.  Thanks.
+    
+    Handles connections from the clients, as well as all database calls.  Eventually I'll incorporate
+    the actual sqlite calls as well.
+    
+    Server uses NCURSES so that connections and requests as well as some server functionality can be seen/executed
+    on the server itself.
+    
+    Current server commands will be:
+      .quit        - Shuts down server
+      .ver         - prints version number
+      .uptime      - shows how long server has actually been running
+      .res         - shows resources being used by process
+      .bcast <msg> - used to broadcast messages to all connected clients.  useful if you need to restart server for some
+                     reason.
 */
  
 #include<stdio.h>
