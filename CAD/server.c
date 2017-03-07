@@ -41,6 +41,7 @@
 #include <err.h>             //used to handle errors?
 #include <errno.h>
 #include <ncurses.h>         //so that the server has an interface
+#include <pthread.h>
 
 // definitions
 
@@ -63,20 +64,18 @@ char *errorlevel[3] = {
 	"WARN",
 	"CRIT" };
 
-// other defs
-#ifndef LINE_MAX
-#define LINE_MAX 1024
-#endif
 
 // program commands
-#define EXITPROG ".quit"
-#define OPTVER   ".ver"
-#define UPTIME   ".uptime" 
-#define OPTRES   ".res"
-#define BCAST    ".bcast"
+#define EXITPROG        ".quit"
+#define OPTVER          ".ver"
+#define UPTIME          ".uptime" 
+#define OPTRES          ".res"
+#define BCAST           ".bcast"
 
-#define PORT 8888
-#define MAXMSG 512
+#define PORT            8888
+#define MAXMSG          512
+
+#define NUM_THREADS     5
 
 // other stuff
 
@@ -150,6 +149,12 @@ struct user
     char *modules;          // What modules they have access to (A=Admin, C=CAD, M=MDT, V=Civilian)
 };
 
+struct log_s
+{
+    char *errlvl;
+    char *mesg;
+};
+
 
  
 // function protoyping here
@@ -159,6 +164,8 @@ int construct_record ( char *fn, char *ln, char *dob, char gender, int race );
 struct NCIC *db_ncic ( char *fn, char *ln, char *dob );
 
 // functions here
+
+
 
 int make_socket (uint16_t port){
     int sock;
@@ -208,37 +215,36 @@ static int read_from_client (int filedes) {
     return 0;
 }
 
-static void printline(const char *errlvl, const char *mesg){
+static void *printline(void *loggerdata){
     
     // do date time here instead of in logger
     
+    // get our logger data to print out.
+    struct log_s *mydata;
+    
     time_t rawtime;
     struct tm * ptm;
-    char *date = "";
-    char *tyme = "";
     
     time ( &rawtime );
     ptm = gmtime ( &rawtime );
     
-    sprintf(date, "%2d%s%4d", ptm->tm_mday, month[(ptm->tm_mon)-1], (ptm->tm_year)+1900);
-    sprintf(tyme, "%2d:%2d", ptm->tm_hour, ptm->tm_min);
-    
-    
     // end date/time stuff
     
-    
-    if (has_colors() == TRUE) wattron(wout, COLOR_PAIR(DATETIME));
-    wprintw(wout, "\n%s %s [", date, time);
-    if (has_colors() == TRUE) wattroff(wout, COLOR_PAIR(DATETIME));
+    if (has_colors() == TRUE) wattron(wout, COLOR_PAIR(MSG));
+    wprintw(wout, "\n%2d%s%4d %2d:%2d [", ptm->tm_mday, month[(ptm->tm_mon)-1], (ptm->tm_year)+1900, ptm->tm_hour, ptm->tm_min);
+    if (has_colors() == TRUE) wattroff(wout, COLOR_PAIR(MSG));
     
     if (has_colors() == TRUE) wattron(wout, COLOR_PAIR(ERRLEVEL));
-    wprintw(wout, "%s", errlvl);
+    wprintw(wout, "%s", mydata->errlvl);
     if (has_colors() == TRUE) wattroff(wout, COLOR_PAIR(ERRLEVEL));
     
     if (has_colors() == TRUE) wattron(wout, COLOR_PAIR(MSG));
-    wprintw(wout, "] %s", mesg);
+    wprintw(wout, "] %s", mydata->mesg);
     if (has_colors() == TRUE) wattroff(wout, COLOR_PAIR(MSG));
     wrefresh(wout);
+    
+    return NULL;
+    
 }
 
 static void readout(void) {
@@ -291,20 +297,22 @@ static void sendmesg(const char* mesg) {
     return;  // do nothing here.  merely a place holder for future stuff, maybe?
 }
 
-static void readinput(void) {
+static void *readinput(void *x_void_ptr) {
     // read kybd input
     char *input = "";
-    if ((input = calloc(1, LINE_MAX)) == NULL)
-        err(EXIT_FAILURE, "failed to allocate space for input");
+    //if ((input = calloc(1, LINE_MAX)) == NULL)
+    //    err(EXIT_FAILURE, "failed to allocate space for input");
     
-    int r = wgetnstr(winp, input, LINE_MAX);
+    int r = wgetnstr(winp, input, 1024);
     updatewinp();
     
     if (r == KEY_RESIZE) redrawall();
-    else if (input == NULL) return;
+    else if (input == NULL) return NULL;
     else if (strlen(input) == 0) redrawall();
     else if (strcmp(input, EXITPROG) == 0) keepRunning = false;
     else sendmesg(input);
+    
+    return NULL;
 }
 
 static void createwins(void) {
@@ -329,11 +337,25 @@ static void createwins(void) {
 
 void logger(int lvl, char *action)
 {
-            
-    // assign 
+    /* create new thread to print out log stmt */
+    pthread_t log_thread;
+    int rc;
+        
+    struct log_s newlog;
     
-    printline(errorlevel[lvl], action);
+    newlog.errlvl = errorlevel[lvl];
+    newlog.mesg   = action;
     
+    rc = pthread_create(&log_thread, NULL, printline, (void *) &newlog);
+    
+    if (rc) {
+        wprintw(wout, "Error: return code from pthread_create() is %d\n", rc);
+        exit(-1);
+    }
+    
+    
+    
+    //printline(errorlevel[lvl], action);
     // printf("[%02d:%02d:%02d] %s - %s\n", (ptm->tm_hour)%24, ptm->tm_min, ptm->tm_sec, user, action);
 }
 
@@ -379,7 +401,14 @@ int main(int argc , char *argv[])
     
     // read input from winp before we enter that loop
     
-    readinput();
+    int xx = 0;
+    pthread_t read_input_thread;
+    if(pthread_create(&read_input_thread, NULL, readinput, &xx)) {
+        logger(2, "Error creating thread.");
+        return 1;
+    }
+    
+    //readinput();
     
     while(keepRunning)
     {
@@ -407,7 +436,7 @@ int main(int argc , char *argv[])
                     }
                     
                     char *contxt = "";
-                    sprintf(contxt, "Connect from host %s, port %hd", inet_ntoa(clientname.sin_addr), ntohs(clientname.sin_port));
+                    sprintf(contxt, "Connect from host %s, port %u", inet_ntoa(clientname.sin_addr), ntohs(clientname.sin_port));
                     logger(0, contxt);
                     FD_SET (new, &active_fd_set);
                     
@@ -424,6 +453,10 @@ int main(int argc , char *argv[])
             }
     }
     
+    if(pthread_join(read_input_thread, NULL)) {
+        logger(1, "Error joining thread.");
+        return 2;
+    }
     destroywins();
     return EXIT_SUCCESS;
 }
